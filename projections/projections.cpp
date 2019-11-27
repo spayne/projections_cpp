@@ -11,6 +11,11 @@ constexpr float pi = 3.14159265358979323846f;
 
 struct rgb
 {
+	rgb() {};
+
+	rgb(float rin, float gin, float bin) :
+		r(rin), g(gin), b(bin) {}
+
 	float r, g, b;
 };
 
@@ -87,21 +92,29 @@ std::vector<VertexColor> make_ring_vertices(float inner, float outer, int num_ri
 	
 	std::vector<VertexColor> ret;
 	float radians_per_segment = 2.0f * pi / num_ring_segments;
-	float starting_angle = -radians_per_segment / 2.0f;
+	float starting_angle = 0;// -radians_per_segment / 2.0f;
 
 	int current_segment = 0;
 	
+	int prev_color = -1;
 	for (int current_segment = 0; current_segment < num_ring_segments; current_segment++)
 	{
-		rgb rgb;
+		int color;
 		if (current_segment % (num_ring_segments_per_color_segment*2) < num_ring_segments_per_color_segment) 
 		{
-			rgb = color1;
+			color = 0;
 		}
 		else
 		{
+			color = 1;
+		}	
+
+		rgb rgb;
+		if (color == 0)
+			rgb = color1;
+		else
 			rgb = color2;
-		}
+
 
 		float t =  starting_angle + radians_per_segment * current_segment;
 		// push ab
@@ -210,7 +223,7 @@ void Grid::Draw()
 class Ring
 {
 public:
-	void Create();
+	void Create(int num_ring_segments, int num_ring_segments_per_color);
 	void Draw();
 
 private:
@@ -219,12 +232,12 @@ private:
 	std::vector<VertexColor> vertices;
 };
 
-void Ring::Create()
+void Ring::Create(int num_ring_segments, int num_ring_segments_per_color)
 {
 	rgb color1 = { 28.0f / 256, 117.0f / 256, 138.0f / 256 };
 	rgb color2 = { 88.0f / 256, 196.0f / 256, 221.0f / 256 };
 	float thickness = 0.05f;
-	vertices = make_ring_vertices(1 - thickness, 1, 64, 4, color1, color2);
+	vertices = make_ring_vertices(1 - thickness, 1, num_ring_segments, num_ring_segments_per_color, color1, color2);
 
 	
 	// shader setup
@@ -281,6 +294,89 @@ void Ring::Draw()
 	glDrawArrays(GL_QUADS, 0, (GLsizei)vertices.size());
 }
 
+// the lines from -1,0 to each of the angle offsets
+class ProjectionLines
+{
+public:
+	void Create(int num_ring_segments, int num_ring_segments_per_color);
+	void Draw();
+
+private:
+	GLuint vertex_buffer, vertex_shader, fragment_shader, program;
+	GLint mvp_location, vpos_location, vcol_location;
+	std::vector<VertexColor> vertices;
+};
+
+void ProjectionLines::Create(int num_ring_segments, int num_ring_segments_per_color)
+{
+	std::vector<VertexColor> ret;
+	int num_color_segments = num_ring_segments / num_ring_segments_per_color;
+	float radians_per_segment = 2.0f * pi / num_color_segments;
+	float starting_angle = 0;// -radians_per_segment / 2.0f;
+
+	rgb rgb(1, 242.0f/256.0f, 0);
+	float line_len =2.f;
+	for (int current_segment = 0; current_segment < num_color_segments; current_segment++)
+	{
+		float t = starting_angle + radians_per_segment * current_segment;
+		ret.push_back(VertexColor(-1.f, 0, rgb));
+		ret.push_back(VertexColor(cos(t), sin(t), rgb));
+	}
+	vertices = ret;
+
+	vertex_shader = glCreateShader(GL_VERTEX_SHADER);
+	glShaderSource(vertex_shader, 1, &vertex_shader_text, NULL);
+	glCompileShader(vertex_shader);
+	fragment_shader = glCreateShader(GL_FRAGMENT_SHADER);
+	glShaderSource(fragment_shader, 1, &fragment_shader_text, NULL);
+	glCompileShader(fragment_shader);
+	program = glCreateProgram();
+	glAttachShader(program, vertex_shader);
+	glAttachShader(program, fragment_shader);
+	glLinkProgram(program);
+
+	mvp_location = glGetUniformLocation(program, "MVP");
+	vpos_location = glGetAttribLocation(program, "vPos");
+	vcol_location = glGetAttribLocation(program, "vCol");
+
+	// array buffer of vertices
+	glGenBuffers(1, &vertex_buffer);
+
+}
+
+void ProjectionLines::Draw()
+{
+	glBindBuffer(GL_ARRAY_BUFFER, vertex_buffer);
+	glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(VertexColor), vertices.data(), GL_STATIC_DRAW);
+
+	glEnableVertexAttribArray(vpos_location);
+	glVertexAttribPointer(vpos_location, 2, GL_FLOAT, GL_FALSE,
+		sizeof(vertices[0]), (void*)0);
+	glEnableVertexAttribArray(vcol_location);
+	glVertexAttribPointer(vcol_location, 3, GL_FLOAT, GL_FALSE,
+		sizeof(vertices[0]), (void*)(sizeof(float) * 2));
+
+
+	mat4x4 m, p, mvp;
+	mat4x4_identity(m);
+	// set the perspective scale
+	mat4x4_ortho(p, ortho_l, ortho_r, ortho_t, ortho_b, 10, -10);
+
+	// setup the view matrix - ie shift x by -1
+	mat4x4 v;
+	mat4x4_translate(v, -1, 0, 0);
+
+	// make mvp 
+	mat4x4 pv;
+	mat4x4_mul(pv, p, v);
+	mat4x4_mul(mvp, m, pv);
+	glUseProgram(program);
+	glUniformMatrix4fv(mvp_location, 1, GL_FALSE, (const GLfloat*)mvp);
+	glDrawArrays(GL_LINES, 0, (GLsizei)vertices.size());
+
+}
+
+
 
 int main(void)
 {
@@ -311,7 +407,12 @@ int main(void)
 	glfwSwapInterval(1);
 
 	Ring r;
-	r.Create();
+	int num_ring_segments = 64;
+	int num_segments_per_color = 4;
+	r.Create(num_ring_segments, num_segments_per_color);
+
+	ProjectionLines pl;
+	pl.Create(num_ring_segments, num_segments_per_color);
 
 	Grid g;
 	g.Create();
@@ -330,6 +431,7 @@ int main(void)
 
 		g.Draw();
 		r.Draw();
+		pl.Draw();
 
 		
 
